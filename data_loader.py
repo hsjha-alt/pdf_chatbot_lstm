@@ -6,7 +6,7 @@ Loads PDFs from a folder and creates text chunks
 import os
 import pickle
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 import re
 
 
@@ -27,13 +27,13 @@ class PDFDataLoader:
         self.overlap = min(overlap, chunk_size - 100) if chunk_size > 100 else min(overlap, chunk_size // 2)
         self.chunks = []
     
-    def load_pdf(self, pdf_path: str, max_pages: int = 1000, max_text_per_page: int = 50000) -> str:
+    def load_pdf(self, pdf_path: str, max_pages: Optional[int] = None, max_text_per_page: int = 50000) -> str:
         """
         Extract text from a PDF file
         
         Args:
             pdf_path: Path to the PDF file
-            max_pages: Maximum number of pages to process (default: 1000)
+            max_pages: Maximum number of pages to process (default: None = all pages)
             max_text_per_page: Maximum text length per page (default: 50000)
             
         Returns:
@@ -44,13 +44,17 @@ class PDFDataLoader:
             reader = PdfReader(pdf_path)
             total_pages = len(reader.pages)
             
-            if total_pages > max_pages:
-                print(f"  Warning: PDF has {total_pages} pages. Processing first {max_pages} pages only.")
-                total_pages = max_pages
+            # Determine how many pages to process
+            if max_pages is None:
+                pages_to_process = total_pages
+            else:
+                if total_pages > max_pages:
+                    print(f"  Warning: PDF has {total_pages} pages. Processing first {max_pages} pages only.")
+                pages_to_process = min(total_pages, max_pages)
             
             text = ""
             for i, page in enumerate(reader.pages):
-                if i >= max_pages:
+                if i >= pages_to_process:
                     break
                 try:
                     page_text = page.extract_text()
@@ -72,12 +76,16 @@ class PDFDataLoader:
                     pdf_reader = PyPDF2.PdfReader(file)
                     total_pages = len(pdf_reader.pages)
                     
-                    if total_pages > max_pages:
-                        print(f"  Warning: PDF has {total_pages} pages. Processing first {max_pages} pages only.")
-                        total_pages = max_pages
+                    # Determine how many pages to process
+                    if max_pages is None:
+                        pages_to_process = total_pages
+                    else:
+                        if total_pages > max_pages:
+                            print(f"  Warning: PDF has {total_pages} pages. Processing first {max_pages} pages only.")
+                        pages_to_process = min(total_pages, max_pages)
                     
                     text = ""
-                    for i in range(min(total_pages, max_pages)):
+                    for i in range(pages_to_process):
                         try:
                             page = pdf_reader.pages[i]
                             page_text = page.extract_text()
