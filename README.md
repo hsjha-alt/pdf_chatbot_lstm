@@ -224,7 +224,10 @@ python train_model.py
 
 ### 1. PDF Loading and Chunking
 - Extracts text from PDF files using PyPDF2/pypdf
+- Uses **LangChain's RecursiveCharacterTextSplitter** for context-aware chunking
+- Respects paragraph boundaries, sentences, and natural text structure
 - Splits text into overlapping chunks (default: 1000 chars with 200 char overlap)
+- Falls back to simple chunking if LangChain is not available
 - Stores chunks with metadata (source file, position, chunk_id, etc.)
 
 ### 2. Embedding Creation
@@ -276,6 +279,8 @@ pdf_chatbot_lstm/
 ### Data Loader
 - `chunk_size`: Maximum characters per chunk (default: 1000)
 - `overlap`: Overlapping characters between chunks (default: 200)
+- **Uses LangChain**: Chunks are created based on context (paragraphs, sentences) rather than fixed character boundaries
+- **Separators Priority**: Paragraphs (`\n\n`) → Lines (`\n`) → Sentences (`.`, `!`, `?`) → Commas → Words
 
 ### Embeddings
 - **Model**: `all-MiniLM-L6-v2` (sentence-transformers)

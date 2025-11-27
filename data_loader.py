@@ -9,6 +9,23 @@ from pathlib import Path
 from typing import List, Dict, Optional
 import re
 
+# Try multiple import paths for different LangChain versions
+LANGCHAIN_AVAILABLE = False
+RecursiveCharacterTextSplitter = None
+
+try:
+    # Try newer version (langchain-text-splitters package)
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    LANGCHAIN_AVAILABLE = True
+except ImportError:
+    try:
+        # Try older version (langchain package)
+        from langchain.text_splitter import RecursiveCharacterTextSplitter
+        LANGCHAIN_AVAILABLE = True
+    except ImportError:
+        LANGCHAIN_AVAILABLE = False
+        print("Warning: LangChain not available. Install with: pip install langchain langchain-text-splitters")
+
 
 class PDFDataLoader:
     """Loads PDFs from a folder and creates chunks"""
@@ -26,6 +43,35 @@ class PDFDataLoader:
         # Ensure overlap is reasonable
         self.overlap = min(overlap, chunk_size - 100) if chunk_size > 100 else min(overlap, chunk_size // 2)
         self.chunks = []
+        
+        # Initialize LangChain text splitter for paragraph-based chunking
+        if LANGCHAIN_AVAILABLE and RecursiveCharacterTextSplitter is not None:
+            try:
+                # Paragraph-based splitter: prioritize paragraphs, only split if paragraph is too large
+                self.text_splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=chunk_size,
+                    chunk_overlap=self.overlap,
+                    length_function=len,
+                    separators=[
+                        "\n\n\n",  # Multiple paragraphs (triple newline)
+                        "\n\n",    # Paragraphs (double newline) - PRIMARY SEPARATOR
+                        "\n",      # Single newline (only if paragraph is too large)
+                        ". ",      # Sentences (only if paragraph is still too large)
+                        "! ",      # Exclamations
+                        "? ",      # Questions
+                        "; ",      # Semicolons
+                        ", ",      # Commas
+                        " ",       # Words
+                        ""         # Characters (last resort)
+                    ],
+                    is_separator_regex=False,
+                    keep_separator=True  # Keep paragraph separators in chunks
+                )
+            except Exception as e:
+                print(f"Warning: Failed to initialize LangChain text splitter: {e}")
+                self.text_splitter = None
+        else:
+            self.text_splitter = None
     
     def load_pdf(self, pdf_path: str, max_pages: Optional[int] = None, max_text_per_page: int = 50000) -> str:
         """
@@ -125,7 +171,7 @@ class PDFDataLoader:
     
     def create_chunks(self, text: str, source_file: str, max_text_size: int = 5000000, max_chunks: int = 10000) -> List[Dict]:
         """
-        Split text into overlapping chunks
+        Split text into chunks based on paragraphs
         
         Args:
             text: Text to chunk
@@ -136,7 +182,7 @@ class PDFDataLoader:
         Returns:
             List of chunk dictionaries
         """
-        text = self.clean_text(text)
+        # Basic validation
         if len(text) < 50:
             return []
         
@@ -146,49 +192,83 @@ class PDFDataLoader:
             text = text[:max_text_size]
         
         chunks = []
-        start = 0
+        
+        # Split text into paragraphs (preserve paragraph structure)
+        # Paragraphs are separated by double newlines or more
+        paragraphs = re.split(r'\n\s*\n+', text)
+        
+        # Filter out empty paragraphs
+        paragraphs = [p.strip() for p in paragraphs if p.strip()]
+        
+        print(f"  Found {len(paragraphs)} paragraphs")
+        
         chunk_id = 0
-        max_iterations = max_chunks * 2  # Safety limit to prevent infinite loops
+        current_chunk = ""
         
-        iteration = 0
-        while start < len(text) and chunk_id < max_chunks and iteration < max_iterations:
-            iteration += 1
-            end = min(start + self.chunk_size, len(text))
+        for para in paragraphs:
+            if chunk_id >= max_chunks:
+                print(f"  Warning: Reached maximum chunks limit ({max_chunks}). Some text may not be chunked.")
+                break
             
-            # Try to break at sentence boundary
-            if end < len(text):
-                # Look for sentence endings near the chunk boundary
-                for punct in ['. ', '.\n', '! ', '!\n', '? ', '?\n']:
-                    last_punct = text.rfind(punct, start, end)
-                    if last_punct != -1 and last_punct > start + self.chunk_size // 2:
-                        end = last_punct + 2
-                        break
+            # If adding this paragraph would exceed chunk_size, save current chunk and start new one
+            if current_chunk and len(current_chunk) + len(para) + 2 > self.chunk_size:
+                # Save current chunk
+                if len(current_chunk.strip()) > 50:
+                    chunks.append({
+                        'text': current_chunk.strip(),
+                        'source_file': source_file,
+                        'chunk_id': chunk_id,
+                        'start_pos': 0,
+                        'end_pos': len(current_chunk)
+                    })
+                    chunk_id += 1
+                
+                # Start new chunk with current paragraph
+                current_chunk = para
+            else:
+                # Add paragraph to current chunk
+                if current_chunk:
+                    current_chunk += "\n\n" + para
+                else:
+                    current_chunk = para
             
-            chunk_text = text[start:end].strip()
-            
-            if len(chunk_text) > 50:  # Only add meaningful chunks
-                chunks.append({
-                    'text': chunk_text,
-                    'source_file': source_file,
-                    'chunk_id': chunk_id,
-                    'start_pos': start,
-                    'end_pos': end
-                })
-                chunk_id += 1
-            
-            # Move start position with overlap
-            new_start = end - self.overlap
-            if new_start <= start:  # Prevent infinite loop or going backwards
-                new_start = start + self.chunk_size - self.overlap
-                if new_start >= len(text):
-                    break
-            start = new_start
+            # If a single paragraph is too large, split it by sentences
+            if len(current_chunk) > self.chunk_size:
+                # Split large paragraph by sentences
+                sentences = re.split(r'([.!?]\s+)', current_chunk)
+                temp_chunk = ""
+                
+                for i in range(0, len(sentences), 2):
+                    sentence = sentences[i] + (sentences[i+1] if i+1 < len(sentences) else "")
+                    
+                    if temp_chunk and len(temp_chunk) + len(sentence) > self.chunk_size:
+                        # Save temp_chunk
+                        if len(temp_chunk.strip()) > 50:
+                            chunks.append({
+                                'text': temp_chunk.strip(),
+                                'source_file': source_file,
+                                'chunk_id': chunk_id,
+                                'start_pos': 0,
+                                'end_pos': len(temp_chunk)
+                            })
+                            chunk_id += 1
+                        temp_chunk = sentence
+                    else:
+                        temp_chunk += sentence
+                
+                current_chunk = temp_chunk
         
-        if iteration >= max_iterations:
-            print(f"  Warning: Reached maximum iterations. Created {len(chunks)} chunks.")
-        if chunk_id >= max_chunks:
-            print(f"  Warning: Reached maximum chunks limit ({max_chunks}). Some text may not be chunked.")
+        # Add the last chunk if it exists
+        if current_chunk and len(current_chunk.strip()) > 50:
+            chunks.append({
+                'text': current_chunk.strip(),
+                'source_file': source_file,
+                'chunk_id': chunk_id,
+                'start_pos': 0,
+                'end_pos': len(current_chunk)
+            })
         
+        print(f"  Created {len(chunks)} paragraph-based chunks")
         return chunks
     
     def load_folder(self, folder_path: str) -> List[Dict]:
