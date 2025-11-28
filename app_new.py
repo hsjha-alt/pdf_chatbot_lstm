@@ -56,7 +56,7 @@ with st.sidebar:
         
         # Show loaded files
         if st.session_state.qa_system.chunks:
-            files = list(set([chunk.get('source_file', 'Unknown') for chunk in st.session_state.qa_system.chunks]))
+            files = sorted(list(set([chunk.get('source_file', 'Unknown') for chunk in st.session_state.qa_system.chunks])))
             with st.expander(f"📄 Trained Files ({len(files)})"):
                 for f in files:
                     st.text(f"• {f}")
@@ -79,6 +79,35 @@ with st.sidebar:
     st.markdown("---")
     
     st.subheader("Query Settings")
+    
+    # PDF Selection
+    if st.session_state.is_ready and st.session_state.qa_system.chunks:
+        available_files = sorted(list(set([chunk.get('source_file', 'Unknown') for chunk in st.session_state.qa_system.chunks])))
+        
+        # Initialize selected files in session state
+        if 'selected_files' not in st.session_state:
+            st.session_state.selected_files = available_files  # Default: all files selected
+        
+        st.markdown("**Select PDF(s) to Query:**")
+        selected_files = st.multiselect(
+            "Choose PDF files",
+            options=available_files,
+            default=st.session_state.selected_files,
+            help="Select one or more PDFs to search. Leave empty to search all PDFs.",
+            key="pdf_selector"
+        )
+        
+        # Update session state (empty list means search all)
+        st.session_state.selected_files = selected_files
+        
+        # Show selection info
+        if selected_files:
+            st.info(f"🔍 Searching in {len(selected_files)} PDF(s): {', '.join(selected_files[:3])}{'...' if len(selected_files) > 3 else ''}")
+        else:
+            st.info("🔍 Searching in all PDFs")
+    else:
+        st.session_state.selected_files = []
+    
     top_k = st.slider("Top K Results", min_value=1, max_value=20, value=5, 
                      help="Number of document chunks to retrieve")
     
@@ -137,9 +166,13 @@ if prompt := st.chat_input("Ask a question about your documents..."):
         with st.chat_message("assistant"):
             with st.spinner("Searching documents..."):
                 try:
+                    # Get selected files (empty list means search all)
+                    selected_files = st.session_state.get('selected_files', [])
+                    
                     result = st.session_state.qa_system.query(
                         prompt, 
-                        top_k=top_k
+                        top_k=top_k,
+                        selected_files=selected_files if selected_files else None
                     )
                     
                     answer = result['answer']

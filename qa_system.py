@@ -210,7 +210,7 @@ class QASystem:
         self.similarity_search = SimilaritySearch(self.chunks, self.chunk_embeddings)
         print("LSTM model ready!")
     
-    def query(self, question: str, top_k: int = 5, use_lstm: bool = False) -> Dict:
+    def query(self, question: str, top_k: int = 5, use_lstm: bool = False, selected_files: List[str] = None) -> Dict:
         """
         Answer a question using hybrid similarity search (semantic + keyword)
         
@@ -218,6 +218,7 @@ class QASystem:
             question: User's question
             top_k: Number of top chunks to retrieve
             use_lstm: Not used anymore - kept for compatibility
+            selected_files: List of PDF filenames to search in. If None, searches all files.
             
         Returns:
             Dictionary with answer, relevant chunks, and scores
@@ -229,23 +230,68 @@ class QASystem:
                 'scores': []
             }
         
-        if self.similarity_search is None:
-            self.similarity_search = SimilaritySearch(self.chunks, self.chunk_embeddings)
+        # Filter chunks by selected files if specified
+        if selected_files:
+            selected_files_set = set(selected_files)
+            filtered_indices = []
+            filtered_chunks = []
+            
+            for i, chunk in enumerate(self.chunks):
+                if chunk.get('source_file', 'Unknown') in selected_files_set:
+                    filtered_indices.append(i)
+                    filtered_chunks.append(chunk)
+            
+            if not filtered_chunks:
+                return {
+                    'answer': f"No chunks found in selected PDF(s): {', '.join(selected_files)}",
+                    'chunks': [],
+                    'scores': [],
+                    'sources': selected_files
+                }
+            
+            # Filter embeddings to match filtered chunks
+            filtered_embeddings = self.chunk_embeddings[filtered_indices]
+            
+            # Create filtered similarity search
+            from similarity_search import SimilaritySearch
+            filtered_similarity_search = SimilaritySearch(filtered_chunks, filtered_embeddings)
+        else:
+            # Use all chunks
+            filtered_chunks = self.chunks
+            filtered_embeddings = self.chunk_embeddings
+            filtered_indices = list(range(len(self.chunks)))
+            
+            # Initialize similarity search if needed
+            if self.similarity_search is None:
+                self.similarity_search = SimilaritySearch(self.chunks, self.chunk_embeddings)
+            filtered_similarity_search = self.similarity_search
         
         # 1. Semantic search using sentence transformers
         question_emb = self.embedder.encode([question])[0]
-        semantic_results = self.similarity_search.search(question_emb, top_k=top_k * 2)
+        semantic_results = filtered_similarity_search.search(question_emb, top_k=top_k * 2)
         
         # 2. Keyword search using BM25 (if available)
         if self.use_hybrid_search and self.bm25 is not None:
-            bm25_scores = []
-            for i in range(len(self.chunks)):
-                score = self.bm25.score(question, i)
-                bm25_scores.append((i, score))
-            
-            # Sort by BM25 score
-            bm25_scores.sort(key=lambda x: x[1], reverse=True)
-            bm25_results = [(self.chunks[idx], score) for idx, score in bm25_scores[:top_k * 2]]
+            if selected_files:
+                # Use filtered BM25 scores
+                bm25_scores = []
+                for local_idx, original_idx in enumerate(filtered_indices):
+                    score = self.bm25.score(question, original_idx)
+                    bm25_scores.append((local_idx, score))
+                
+                # Sort by BM25 score
+                bm25_scores.sort(key=lambda x: x[1], reverse=True)
+                bm25_results = [(filtered_chunks[local_idx], score) for local_idx, score in bm25_scores[:top_k * 2]]
+            else:
+                # Use all chunks
+                bm25_scores = []
+                for i in range(len(self.chunks)):
+                    score = self.bm25.score(question, i)
+                    bm25_scores.append((i, score))
+                
+                # Sort by BM25 score
+                bm25_scores.sort(key=lambda x: x[1], reverse=True)
+                bm25_results = [(self.chunks[idx], score) for idx, score in bm25_scores[:top_k * 2]]
             
             # Combine semantic and keyword results
             combined_scores = {}
