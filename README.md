@@ -55,6 +55,8 @@ A complete PDF Question-Answering system built with sentence transformers, LSTM 
    ```bash
    pip install -r requirements_new.txt
    ```
+   
+   This will install all required packages including PyMuPDF for fast PDF text extraction.
 
 ## Usage
 
@@ -223,11 +225,12 @@ python train_model.py
 ## How It Works
 
 ### 1. PDF Loading and Chunking
-- Extracts text from PDF files using PyPDF2/pypdf
-- Uses **LangChain's RecursiveCharacterTextSplitter** for context-aware chunking
-- Respects paragraph boundaries, sentences, and natural text structure
-- Splits text into overlapping chunks (default: 1000 chars with 200 char overlap)
-- Falls back to simple chunking if LangChain is not available
+- Extracts text from PDF files using **PyMuPDF** (fast direct text extraction)
+- **Fast Processing**: PyMuPDF extracts text directly from PDFs
+- **Fallback Support**: Falls back to pypdf/PyPDF2 if PyMuPDF is not available
+- Uses **paragraph-based chunking** for better context preservation
+- Respects paragraph boundaries and natural text structure
+- Splits text into chunks based on paragraphs (default: 1000 chars with 200 char overlap)
 - Stores chunks with metadata (source file, position, chunk_id, etc.)
 
 ### 2. Embedding Creation
@@ -320,9 +323,11 @@ pdf_chatbot_lstm/
 ## Troubleshooting
 
 ### PDFs not loading
-- Make sure PDFs contain extractable text (not just images)
+- **Text-based PDFs**: Should work automatically with PyMuPDF (primary method) or PyPDF2/pypdf (fallback)
 - Check that the folder path is correct
-- Verify PyPDF2/pypdf can read the PDF format
+- Verify PyMuPDF is installed: `pip install PyMuPDF`
+- The system uses PyMuPDF first (fastest), then falls back to pypdf/PyPDF2 if needed
+- **Note**: Scanned PDFs (image-based) may not work well as they require OCR which is not included
 
 ### Embedding creation fails
 - First run requires internet to download the sentence transformer model (~80MB)
@@ -379,6 +384,7 @@ pdf_chatbot_lstm/
 - All data is stored locally in `data/` and `models/` directories
 - You can add PDFs incrementally - run `train_model.py` multiple times
 - The system automatically merges old and new PDFs
+- **Note**: This system works best with text-based PDFs. Scanned PDFs (image-based) may not extract text properly
 
 ## License
 
