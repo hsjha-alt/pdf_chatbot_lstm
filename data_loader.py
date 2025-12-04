@@ -1,6 +1,7 @@
 """
 PDF Data Loader and Chunking Module
 Loads PDFs from a folder and creates text chunks
+Uses PyMuPDF for fast direct text extraction (no OCR needed!)
 """
 
 import os
@@ -8,6 +9,14 @@ import pickle
 from pathlib import Path
 from typing import List, Dict, Optional
 import re
+
+# PyMuPDF support - fast direct text extraction
+USE_PYMUPDF = False
+try:
+    import fitz  # PyMuPDF - fast and efficient PDF text extraction
+    USE_PYMUPDF = True
+except ImportError:
+    USE_PYMUPDF = False
 
 # Try multiple import paths for different LangChain versions
 LANGCHAIN_AVAILABLE = False
@@ -73,18 +82,71 @@ class PDFDataLoader:
         else:
             self.text_splitter = None
     
-    def load_pdf(self, pdf_path: str, max_pages: Optional[int] = None, max_text_per_page: int = 50000) -> str:
+    def load_pdf(self, pdf_path: str, max_pages: Optional[int] = None, max_text_per_page: int = 50000, use_ocr: bool = False) -> str:
         """
-        Extract text from a PDF file
+        Extract text from a PDF file using PyMuPDF (fast direct extraction)
         
         Args:
             pdf_path: Path to the PDF file
             max_pages: Maximum number of pages to process (default: None = all pages)
             max_text_per_page: Maximum text length per page (default: 50000)
+            use_ocr: Deprecated - kept for compatibility but not used
             
         Returns:
             Extracted text as string
         """
+        # Step 1: Try PyMuPDF first (fastest and most reliable)
+        if USE_PYMUPDF:
+            try:
+                print(f"  📄 Extracting text using PyMuPDF (fast direct extraction)...")
+                doc = fitz.open(pdf_path)
+                total_pages = len(doc)
+                
+                # Determine how many pages to process
+                if max_pages is None:
+                    pages_to_process = total_pages
+                else:
+                    if total_pages > max_pages:
+                        print(f"  Warning: PDF has {total_pages} pages. Processing first {max_pages} pages only.")
+                    pages_to_process = min(total_pages, max_pages)
+                
+                text = ""
+                pages_with_text = 0
+                for i in range(pages_to_process):
+                    try:
+                        page = doc[i]
+                        # Extract text directly - PyMuPDF is very fast!
+                        page_text = page.get_text()
+                        
+                        if page_text and len(page_text.strip()) > 10:
+                            # Limit text per page to prevent memory issues
+                            if len(page_text) > max_text_per_page:
+                                page_text = page_text[:max_text_per_page]
+                                print(f"  Warning: Page {i+1} text truncated (too long)")
+                            text += page_text + "\n"
+                            pages_with_text += 1
+                    except Exception as e:
+                        print(f"  Warning: Error extracting text from page {i+1}: {e}")
+                        continue
+                
+                doc.close()
+                
+                # Check if we got enough text (at least 50% of pages should have text)
+                if pages_with_text >= pages_to_process * 0.5 and len(text.strip()) > 100:
+                    print(f"  ✅ Extracted text from {pages_with_text}/{pages_to_process} pages using PyMuPDF")
+                    return text
+                elif text:
+                    print(f"  ⚠️  Limited text extracted ({pages_with_text}/{pages_to_process} pages), but returning what we have")
+                    return text
+                else:
+                    print(f"  ⚠️  No text extracted with PyMuPDF, trying fallback methods...")
+            except Exception as e:
+                print(f"  Warning: PyMuPDF extraction failed: {e}, trying fallback...")
+        
+        # Step 2: Fallback to pypdf/PyPDF2 if PyMuPDF failed or not available
+        text = ""
+        total_pages = 0
+        
         try:
             from pypdf import PdfReader
             reader = PdfReader(pdf_path)
@@ -99,22 +161,28 @@ class PDFDataLoader:
                 pages_to_process = min(total_pages, max_pages)
             
             text = ""
+            pages_with_text = 0
             for i, page in enumerate(reader.pages):
                 if i >= pages_to_process:
                     break
                 try:
                     page_text = page.extract_text()
-                    if page_text:
+                    if page_text and len(page_text.strip()) > 10:
                         # Limit text per page to prevent memory issues
                         if len(page_text) > max_text_per_page:
                             page_text = page_text[:max_text_per_page]
                             print(f"  Warning: Page {i+1} text truncated (too long)")
-                        if len(page_text.strip()) > 10:
-                            text += page_text + "\n"
+                        text += page_text + "\n"
+                        pages_with_text += 1
                 except Exception as e:
-                    print(f"  Warning: Error extracting page {i+1}: {e}")
+                    print(f"  Warning: Error extracting text from page {i+1}: {e}")
                     continue
-            return text
+            
+            # Check if we got enough text
+            if pages_with_text >= pages_to_process * 0.5 and len(text.strip()) > 100:
+                print(f"  ✅ Extracted text from {pages_with_text}/{pages_to_process} pages using pypdf")
+                return text
+                
         except ImportError:
             try:
                 import PyPDF2
@@ -131,27 +199,38 @@ class PDFDataLoader:
                         pages_to_process = min(total_pages, max_pages)
                     
                     text = ""
+                    pages_with_text = 0
                     for i in range(pages_to_process):
                         try:
                             page = pdf_reader.pages[i]
                             page_text = page.extract_text()
-                            if page_text:
+                            if page_text and len(page_text.strip()) > 10:
                                 # Limit text per page
                                 if len(page_text) > max_text_per_page:
                                     page_text = page_text[:max_text_per_page]
                                     print(f"  Warning: Page {i+1} text truncated (too long)")
-                                if len(page_text.strip()) > 10:
-                                    text += page_text + "\n"
+                                text += page_text + "\n"
+                                pages_with_text += 1
                         except Exception as e:
-                            print(f"  Warning: Error extracting page {i+1}: {e}")
+                            print(f"  Warning: Error extracting text from page {i+1}: {e}")
                             continue
-                    return text
+                    
+                    # Check if we got enough text
+                    if pages_with_text >= pages_to_process * 0.5 and len(text.strip()) > 100:
+                        print(f"  ✅ Extracted text from {pages_with_text}/{pages_to_process} pages using PyPDF2")
+                        return text
             except Exception as e:
-                print(f"Error reading PDF {pdf_path}: {e}")
-                return ""
-        except Exception as e:
-            print(f"Error reading PDF {pdf_path}: {e}")
+                print(f"  Error reading PDF with PyPDF2: {e}")
+        
+        # Return text if we have any, otherwise empty
+        if text and len(text.strip()) > 10:
+            print(f"  ⚠️  Extracted limited text: {len(text)} characters")
+            return text
+        else:
+            print(f"  ❌ Could not extract text from PDF. This might be a scanned PDF without text layer.")
+            print(f"  💡 Tip: Install PyMuPDF for better PDF support: pip install PyMuPDF")
             return ""
+    
     
     def clean_text(self, text: str) -> str:
         """
